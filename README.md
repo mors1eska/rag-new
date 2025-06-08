@@ -1,225 +1,225 @@
-# LangChain RAG System for 1C Knowledge Base
+# RAG-система на основе LangChain для базы знаний 1С
 
-## 1. Project Overview
+## 1. Обзор проекта
 
-This project implements a Retrieval Augmented Generation (RAG) system using Python and the LangChain library. Its primary purpose is to provide a Question & Answering interface over a knowledge base related to 1C software products (e.g., УНФ, БП, ERP). Users can ask questions in natural language, and the system will retrieve relevant information from indexed documents (PDFs, Markdown files, Excel sheets, and SQLite databases) and generate an answer along with source citations.
+Этот проект реализует систему Retrieval Augmented Generation (RAG) с использованием Python и библиотеки LangChain. Его основная цель — предоставить интерфейс для Вопросов и Ответов (Q&A) по базе знаний, связанной с программными продуктами 1С (например, УНФ, БП, ERP). Пользователи могут задавать вопросы на естественном языке, и система будет извлекать релевантную информацию из проиндексированных документов (PDF, Markdown-файлы, таблицы Excel и базы данных SQLite) и генерировать ответ вместе с ссылками на источники.
 
-**Key Technologies:**
-*   **LangChain:** Core framework for building the RAG pipeline.
-*   **Python:** Programming language.
-*   **OpenAI / Hugging Face Models:** For text embeddings and language generation.
-*   **ChromaDB:** Vector store for storing and retrieving document embeddings.
-*   **Various Document Loaders:** For PDF, Markdown, Excel, and SQLite data.
+**Ключевые технологии:**
+*   **LangChain:** Основной фреймворк для построения RAG-конвейера.
+*   **Python:** Язык программирования.
+*   **Модели OpenAI / Hugging Face:** Для создания текстовых эмбеддингов и генерации текста.
+*   **ChromaDB:** Векторное хранилище для хранения и извлечения эмбеддингов документов.
+*   **Различные загрузчики документов:** Для данных из PDF, Markdown, Excel и SQLite.
 
-## 2. Project Structure
+## 2. Структура проекта
 
 ```
 .
 ├── data/
 │   ├── pdfs/
 │   │   ├── УНФ/
-│   │   │   └── example_unf_doc1.pdf
-│   │   │   └── example_unf_doc2.pdf
+│   │   │   └── example_unf_doc1.pdf  # Пример документа УНФ 1
+│   │   │   └── example_unf_doc2.pdf  # Пример документа УНФ 2
 │   │   ├── БП/
-│   │   │   └── example_bp_doc1.pdf
+│   │   │   └── example_bp_doc1.pdf   # Пример документа БП 1
 │   │   └── ERP/
-│   │       └── example_erp_doc1.pdf
+│   │       └── example_erp_doc1.pdf  # Пример документа ERP 1
 │   ├── markdown/
-│   │   └── (similar structure for .md files if used)
+│   │   └── (аналогичная структура для .md файлов, если используются)
 │   ├── excel/
-│   │   └── (similar structure for .xlsx files if used)
+│   │   └── (аналогичная структура для .xlsx файлов, если используются)
 │   └── database/
-│       └── 1c_knowledge_base.db (if SQLite is used)
+│       └── 1c_knowledge_base.db (если используется SQLite)
 ├── db_chroma/
-│   └── (ChromaDB files will be created here after indexing)
+│   └── (файлы ChromaDB будут созданы здесь после индексации)
 ├── .venv/
-│   └── (Python virtual environment)
-├── .env
-├── index_data.py
-├── query_data.py
-├── requirements.txt
-├── setup_env.sh
-└── README.md
+│   └── (виртуальное окружение Python)
+├── .env               # Файл для переменных окружения (например, API ключи)
+├── index_data.py      # Скрипт для индексации данных
+├── query_data.py      # Скрипт для выполнения запросов к данным
+├── requirements.txt   # Список зависимостей Python
+├── setup_env.sh       # Скрипт для настройки окружения (Linux/macOS)
+└── README.md          # Этот файл
 ```
 
-## 3. Step 1: Preparation and Project Setup
+## 3. Шаг 1: Подготовка и настройка проекта
 
-1.  **Create Project Folder:**
-    Create a main directory for your project (e.g., `my_1c_rag_project`). All subsequent files and folders will be inside this directory.
+1.  **Создайте папку проекта:**
+    Создайте основную директорию для вашего проекта (например, `my_1c_rag_project`). Все последующие файлы и папки будут находиться внутри этой директории.
 
-2.  **Create Data Subfolders:**
-    *   Inside the main project folder, create a `data` directory.
-    *   Within `data`, create subdirectories for different file types: `pdfs`, `markdown`, `excel`, `database`.
-    *   **Crucially**, within `data/pdfs` (and other relevant type-specific folders like `data/markdown`), create subdirectories named after the 1C sections you want to filter by. For example:
+2.  **Создайте подпапки для данных:**
+    *   Внутри основной папки проекта создайте директорию `data`.
+    *   Внутри `data` создайте поддиректории для различных типов файлов: `pdfs`, `markdown`, `excel`, `database`.
+    *   **Критически важно:** Внутри `data/pdfs` (и других релевантных папок для конкретных типов файлов, таких как `data/markdown`) создайте поддиректории, названные в соответствии с разделами 1С, по которым вы хотите фильтровать. Например:
         *   `data/pdfs/УНФ`
         *   `data/pdfs/БП`
         *   `data/pdfs/ERP`
         *   `data/pdfs/Розница`
         *   `data/pdfs/ЗУП`
-    *   Ensure these folder names exactly match the strings listed in the `KNOWN_1C_SECTIONS` variable in `index_data.py` and `query_data.py` if you want the section filtering to work correctly. The `get_1c_section_from_path` function in `index_data.py` relies on these path segments.
+    *   Убедитесь, что эти имена папок точно совпадают со строками, перечисленными в переменной `KNOWN_1C_SECTIONS` в `index_data.py` и `query_data.py`, если вы хотите, чтобы фильтрация по разделам работала корректно. Функция `get_1c_section_from_path` в `index_data.py` полагается на эти сегменты пути.
 
-3.  **Place Your Documents:**
-    *   Copy your PDF documents into the respective 1C section folders (e.g., all PDFs related to "УНФ" go into `data/pdfs/УНФ/`).
-    *   Do the same for Markdown, Excel, or other file types if you implement their loaders.
-    *   If using SQLite, place your `.db` file in the `data/database/` directory.
+3.  **Разместите ваши документы:**
+    *   Скопируйте ваши PDF-документы в соответствующие папки разделов 1С (например, все PDF, относящиеся к "УНФ", помещаются в `data/pdfs/УНФ/`).
+    *   Сделайте то же самое для Markdown, Excel или других типов файлов, если вы реализуете их загрузчики.
+    *   Если используете SQLite, поместите ваш `.db` файл в директорию `data/database/`.
 
-4.  **Create Script and Configuration Files:**
-    *   Create the following files in your main project directory:
+4.  **Создайте файлы скриптов и конфигурации:**
+    *   Создайте следующие файлы в основной директории вашего проекта:
         *   `requirements.txt`
         *   `setup_env.sh`
         *   `index_data.py`
         *   `query_data.py`
-    *   Copy the Python code generated in previous steps into `index_data.py` and `query_data.py`. Copy the requirements list into `requirements.txt` and the shell script content into `setup_env.sh`.
+    *   Скопируйте код Python, сгенерированный на предыдущих шагах, в `index_data.py` и `query_data.py`. Скопируйте список зависимостей в `requirements.txt` и содержимое shell-скрипта в `setup_env.sh`.
 
-5.  **Create and Configure `.env` File:**
-    *   Create a file named `.env` in the root of your project directory.
-    *   Add your API keys or configuration. For OpenAI:
+5.  **Создайте и настройте файл `.env`:**
+    *   Создайте файл с именем `.env` в корневой директории вашего проекта.
+    *   Добавьте ваши API-ключи или конфигурацию. Для OpenAI:
         ```env
         OPENAI_API_KEY="your_actual_openai_api_key_here"
         ```
-    *   If you choose to use Hugging Face embeddings or models that require an API token, add it here as well (e.g., `HUGGINGFACEHUB_API_TOKEN="your_huggingface_token"`).
-    *   The scripts `index_data.py` and `query_data.py` load these variables.
+    *   Если вы решите использовать эмбеддинги или модели Hugging Face, требующие API-токен, добавьте его также сюда (например, `HUGGINGFACEHUB_API_TOKEN="your_huggingface_token"`).
+    *   Скрипты `index_data.py` и `query_data.py` загружают эти переменные.
 
-## 4. Step 2: Environment Setup and Dependency Installation
+## 4. Шаг 2: Настройка окружения и установка зависимостей
 
-### For Linux/macOS:
+### Для Linux/macOS:
 
-1.  **Make `setup_env.sh` executable:**
+1.  **Сделайте `setup_env.sh` исполняемым:**
     ```bash
     chmod +x setup_env.sh
     ```
-2.  **Run the setup script:**
+2.  **Запустите скрипт настройки:**
     ```bash
     ./setup_env.sh
     ```
-    This script will create a Python virtual environment in `.venv/`, activate it (for the script's duration), and install all dependencies from `requirements.txt`.
-3.  **Activate the environment in your current shell:**
-    After the script finishes, you need to activate the environment in your current terminal session to run the Python scripts:
+    Этот скрипт создаст виртуальное окружение Python в `.venv/`, активирует его (на время выполнения скрипта) и установит все зависимости из `requirements.txt`.
+3.  **Активируйте окружение в вашей текущей оболочке:**
+    После завершения работы скрипта вам необходимо активировать окружение в текущей сессии терминала для запуска скриптов Python:
     ```bash
     source .venv/bin/activate
     ```
-    You should see `(.venv)` prefixed to your shell prompt.
+    Вы должны увидеть `(.venv)` в начале приглашения вашей оболочки.
 
-### For Windows:
+### Для Windows:
 
-1.  **Create a virtual environment:**
-    Open Command Prompt or PowerShell, navigate to your project directory, and run:
+1.  **Создайте виртуальное окружение:**
+    Откройте Командную строку или PowerShell, перейдите в директорию вашего проекта и выполните:
     ```bash
     python -m venv .venv
     ```
-2.  **Activate the virtual environment:**
+2.  **Активируйте виртуальное окружение:**
     ```bash
     .venv\Scripts\activate
     ```
-    You should see `(.venv)` prefixed to your shell prompt.
-3.  **Install dependencies:**
+    Вы должны увидеть `(.venv)` в начале приглашения вашей оболочки.
+3.  **Установите зависимости:**
     ```bash
     pip install -r requirements.txt
     ```
-**Note on `unstructured` for Windows:** The `unstructured[local-inference]` package can sometimes have complex dependencies (like `detectron2`) that are challenging to install on Windows. If you encounter issues:
-    *   Consider using `unstructured` without `[local-inference]` if you don't need all its capabilities for local model inference (though some loaders might rely on it).
-    *   Look for specific Windows installation guides for `unstructured` or its problematic sub-dependencies.
-    *   You might need to install tools like Build Tools for Visual Studio.
-    *   For PDF, `PyPDFLoader` is a good alternative and is generally easier to install. The `index_data.py` script uses `PyPDFLoader` by default for PDFs.
+**Примечание по `unstructured` для Windows:** Пакет `unstructured[local-inference]` иногда имеет сложные зависимости (например, `detectron2`), которые могут быть сложны в установке на Windows. Если вы столкнетесь с проблемами:
+    *   Рассмотрите возможность использования `unstructured` без `[local-inference]`, если вам не нужны все его возможности для локального инференса моделей (хотя некоторые загрузчики могут на него полагаться).
+    *   Ищите конкретные руководства по установке `unstructured` или его проблемных под-зависимостей для Windows.
+    *   Вам может потребоваться установить такие инструменты, как Build Tools for Visual Studio.
+    *   Для PDF `PyPDFLoader` является хорошей альтернативой и обычно проще в установке. Скрипт `index_data.py` по умолчанию использует `PyPDFLoader` для PDF.
 
-## 5. Step 3: Data Indexing
+## 5. Шаг 3: Индексация данных
 
-1.  **Check Configurations in `index_data.py`:**
-    *   Open `index_data.py`.
-    *   Verify `DATA_DIR`, `PDF_DIR`, `MD_DIR`, etc., point to your actual data locations.
-    *   Ensure `KNOWN_1C_SECTIONS` includes all the section folder names you created.
-    *   Confirm your choice of embedding model (`USE_OPENAI_EMBEDDINGS` and `EMBEDDING_MODEL_NAME_HF`). If using OpenAI, ensure your API key is in `.env`.
-    *   Adjust `CHUNK_SIZE` and `CHUNK_OVERLAP` if needed, though defaults are provided.
+1.  **Проверьте конфигурации в `index_data.py`:**
+    *   Откройте `index_data.py`.
+    *   Убедитесь, что `DATA_DIR`, `PDF_DIR`, `MD_DIR` и т.д. указывают на ваши фактические местоположения данных.
+    *   Убедитесь, что `KNOWN_1C_SECTIONS` включает все имена папок разделов, которые вы создали.
+    *   Подтвердите ваш выбор модели для эмбеддингов (`USE_OPENAI_EMBEDDINGS` и `EMBEDDING_MODEL_NAME_HF`). Если используете OpenAI, убедитесь, что ваш API-ключ находится в `.env`.
+    *   При необходимости измените `CHUNK_SIZE` и `CHUNK_OVERLAP`, хотя предоставлены значения по умолчанию.
 
-2.  **Run the Indexing Script:**
-    Make sure your virtual environment is activated (`source .venv/bin/activate` or `.venv\Scripts\activate`).
+2.  **Запустите скрипт индексации:**
+    Убедитесь, что ваше виртуальное окружение активировано (`source .venv/bin/activate` или `.venv\Scripts\activate`).
     ```bash
     python index_data.py
     ```
 
-3.  **What Happens During Indexing:**
-    *   The script will scan the specified data directories (starting with PDFs).
-    *   It will load documents, extract text, and assign metadata (including `source_type`, `file_name`, `full_path`, and `1c_section` derived from the path).
-    *   The text will be split into smaller chunks.
-    *   These chunks will be converted into vector embeddings using the chosen embedding model.
-    *   The embeddings and their associated text/metadata will be stored in a ChromaDB vector store.
-    *   A new directory named `db_chroma` (or as configured in `CHROMA_PERSIST_DIR`) will be created in your project folder, containing the database files.
-    *   You'll see progress messages in the console.
+3.  **Что происходит во время индексации:**
+    *   Скрипт просканирует указанные директории данных (начиная с PDF).
+    *   Он загрузит документы, извлечет текст и назначит метаданные (включая `source_type`, `file_name`, `full_path` и `1c_section`, извлеченный из пути).
+    *   Текст будет разделен на меньшие фрагменты (чанки).
+    *   Эти чанки будут преобразованы в векторные эмбеддинги с использованием выбранной модели эмбеддингов.
+    *   Эмбеддинги и связанный с ними текст/метаданные будут сохранены в векторном хранилище ChromaDB.
+    *   В папке вашего проекта будет создана новая директория с именем `db_chroma` (или как настроено в `CHROMA_PERSIST_DIR`), содержащая файлы базы данных.
+    *   Вы увидите сообщения о ходе выполнения в консоли.
 
-## 6. Step 4: Querying and Testing
+## 6. Шаг 4: Выполнение запросов и тестирование
 
-1.  **Check Configurations in `query_data.py`:**
-    *   Open `query_data.py`.
-    *   Ensure `CHROMA_PERSIST_DIR` and `CHROMA_COLLECTION_NAME` match those in `index_data.py`.
-    *   Verify that `USE_OPENAI_EMBEDDINGS` and `EMBEDDING_MODEL_NAME_HF` are set consistently with how the data was indexed. **Using a different embedding model for querying than for indexing will lead to poor results.**
-    *   Confirm your LLM choice (`LLM_PROVIDER`).
+1.  **Проверьте конфигурации в `query_data.py`:**
+    *   Откройте `query_data.py`.
+    *   Убедитесь, что `CHROMA_PERSIST_DIR` и `CHROMA_COLLECTION_NAME` совпадают с теми, что в `index_data.py`.
+    *   Убедитесь, что `USE_OPENAI_EMBEDDINGS` и `EMBEDDING_MODEL_NAME_HF` установлены в соответствии с тем, как данные были проиндексированы. **Использование другой модели эмбеддингов для запросов, отличной от использованной при индексации, приведет к плохим результатам.**
+    *   Подтвердите ваш выбор LLM (`LLM_PROVIDER`).
 
-2.  **Run the Query Script:**
-    Make sure your virtual environment is activated.
-    The command format is:
+2.  **Запустите скрипт для выполнения запросов:**
+    Убедитесь, что ваше виртуальное окружение активировано.
+    Формат команды:
     ```bash
-    python query_data.py "YOUR_QUESTION_HERE" [--section SECTION_NAME]
+    python query_data.py "ВАШ_ВОПРОС_ЗДЕСЬ" [--section ИМЯ_РАЗДЕЛА]
     ```
-    *   `"YOUR_QUESTION_HERE"`: Your question in natural language, enclosed in quotes.
-    *   `--section SECTION_NAME` (optional): Filter the search to a specific 1C section (e.g., `УНФ`, `БП`). If omitted or set to `все`, it searches across all indexed sections.
+    *   `"ВАШ_ВОПРОС_ЗДЕСЬ"`: Ваш вопрос на естественном языке, заключенный в кавычки.
+    *   `--section ИМЯ_РАЗДЕЛА` (необязательно): Фильтровать поиск по определенному разделу 1С (например, `УНФ`, `БП`). Если опущено или установлено значение `все`, поиск будет осуществляться по всем проиндексированным разделам.
 
-3.  **Example Queries:**
-    *   **Without section filter (searches all documents):**
+3.  **Примеры запросов:**
+    *   **Без фильтра по разделу (поиск по всем документам):**
         ```bash
         python query_data.py "Что такое основные средства в 1С?"
         ```
-    *   **With section filter for "УНФ":**
+    *   **С фильтром по разделу "УНФ":**
         ```bash
         python query_data.py "Как сформировать отчет о продажах в УНФ?" --section УНФ
         ```
-    *   **With section filter for "БП":**
+    *   **С фильтром по разделу "БП":**
         ```bash
         python query_data.py "Как закрыть месяц в Бухгалтерии предприятия?" --section БП
         ```
 
-4.  **Analyzing the Output:**
-    The script will print:
-    *   **The LLM's Answer:** The generated response to your question.
-    *   **Sources:** A list of document chunks that the retriever found relevant and were likely used by the LLM to formulate the answer. For each source, you'll see:
-        *   A snippet of the content.
-        *   Metadata like `file_name`, `full_path`, `source_type`, `1c_section`, and potentially `page_number` (for PDFs) or other DB-specific identifiers. This helps you verify the information and understand its origin.
+4.  **Анализ вывода:**
+    Скрипт выведет:
+    *   **Ответ LLM:** Сгенерированный ответ на ваш вопрос.
+    *   **Источники:** Список фрагментов документов, которые ретривер счел релевантными и которые, вероятно, были использованы LLM для формулирования ответа. Для каждого источника вы увидите:
+        *   Фрагмент содержимого.
+        *   Метаданные, такие как `file_name`, `full_path`, `source_type`, `1c_section`, и, возможно, `page_number` (для PDF) или другие идентификаторы, специфичные для БД. Это поможет вам проверить информацию и понять ее происхождение.
 
-## 7. Step 5: Evaluation and Iteration
+## 7. Шаг 5: Оценка и итерация
 
-Building a good RAG system is an iterative process. Evaluate the results critically:
+Создание хорошей RAG-системы — это итеративный процесс. Критически оценивайте результаты:
 
-*   **Answer Accuracy:** Is the LLM's answer correct and relevant to the question?
-*   **Source Relevance:** Are the retrieved source documents actually relevant to the question and the answer?
-*   **Filter Correctness:** If using section filters, are only documents from that section being retrieved?
-*   **LLM Hallucinations:** Is the LLM inventing information not present in the sources?
-*   **Text Extraction Quality:** Are there issues with how text is extracted from PDFs or other files (e.g., garbled text, missed sections)?
-*   **Chunk Optimality:** Are the chunks too small (lacking context) or too large (diluting information or exceeding LLM context limits)?
+*   **Точность ответа:** Является ли ответ LLM правильным и релевантным вопросу?
+*   **Релевантность источников:** Действительно ли извлеченные исходные документы релевантны вопросу и ответу?
+*   **Корректность фильтра:** Если используются фильтры по разделам, извлекаются ли только документы из этого раздела?
+*   **Галлюцинации LLM:** Придумывает ли LLM информацию, отсутствующую в источниках?
+*   **Качество извлечения текста:** Есть ли проблемы с тем, как текст извлекается из PDF или других файлов (например, искаженный текст, пропущенные разделы)?
+*   **Оптимальность чанков:** Являются ли чанки слишком маленькими (не хватает контекста) или слишком большими (размывают информацию или превышают лимиты контекста LLM)?
 
-**If results are unsatisfactory, consider tweaking:**
+**Если результаты неудовлетворительны, рассмотрите возможность изменения:**
 
-*   **Document Loaders:** Try different PDF loaders in `index_data.py` if PDF extraction is poor (e.g., `UnstructuredPDFLoader`, `PyMuPDFLoader`).
-*   **Chunking Strategy:** Adjust `CHUNK_SIZE` and `CHUNK_OVERLAP` in `index_data.py`.
-*   **Embedding Models:** Experiment with different embedding models (Russian-specific or better multilingual ones) in both `index_data.py` and `query_data.py`. **Remember to re-index if you change the embedding model.**
-*   **Retriever Settings:**
-    *   `k` value in `query_data.py` (number of documents to retrieve).
-    *   `search_type` (e.g., "similarity", "mmr" for Maximum Marginal Relevance).
-*   **LLM Model/Temperature:** Try different LLMs or adjust the `temperature` parameter in `query_data.py` to control creativity vs. factuality.
-*   **Chain Type:** Experiment with different chain types in `RetrievalQA` (e.g., `map_reduce`, `refine`) if the "stuff" type is not working well for long documents or many retrieved chunks.
-*   **Prompt Engineering:** Customize the prompt used by the `RetrievalQA` chain to better guide the LLM.
+*   **Загрузчики документов:** Попробуйте разные загрузчики PDF в `index_data.py`, если извлечение из PDF плохое (например, `UnstructuredPDFLoader`, `PyMuPDFLoader`).
+*   **Стратегия разбиения на чанки:** Измените `CHUNK_SIZE` и `CHUNK_OVERLAP` в `index_data.py`.
+*   **Модели эмбеддингов:** Экспериментируйте с различными моделями эмбеддингов (специфичными для русского языка или лучшими многоязычными) как в `index_data.py`, так и в `query_data.py`. **Не забудьте переиндексировать данные, если вы меняете модель эмбеддингов.**
+*   **Настройки ретривера:**
+    *   Значение `k` в `query_data.py` (количество извлекаемых документов).
+    *   `search_type` (например, "similarity", "mmr" для Maximum Marginal Relevance).
+*   **Модель/Температура LLM:** Попробуйте разные LLM или измените параметр `temperature` в `query_data.py` для контроля креативности в сравнении с фактологичностью.
+*   **Тип цепочки (Chain Type):** Экспериментируйте с различными типами цепочек в `RetrievalQA` (например, `map_reduce`, `refine`), если тип "stuff" плохо работает для длинных документов или большого количества извлеченных чанков.
+*   **Инженерия промптов (Prompt Engineering):** Настройте промпт, используемый цепочкой `RetrievalQA`, чтобы лучше направлять LLM.
 
-**Re-index your data (`python index_data.py`) whenever you change data preprocessing steps, chunking strategies, or the embedding model.**
+**Переиндексируйте ваши данные (`python index_data.py`) всякий раз, когда вы меняете шаги предварительной обработки данных, стратегии разбиения на чанки или модель эмбеддингов.**
 
-## 8. Further Steps (Future Development)
+## 8. Дальнейшие шаги (Будущая разработка)
 
-*   **Implement Other Data Loaders:** Fully implement the placeholder functions in `index_data.py` for Markdown, Excel, and SQLite to incorporate a wider range of knowledge.
-*   **Advanced Retrievers:** Explore more sophisticated retrievers in LangChain:
-    *   `SelfQueryRetriever`: Allows the LLM to write metadata filters based on the natural language query.
-    *   `ContextualCompressionRetriever`: Re-ranks and filters retrieved documents based on the query context.
-    *   Parent Document Retriever: Indexes small chunks but retrieves larger parent chunks for better context.
-*   **Hybrid Search:** Combine keyword-based search (like BM25) with semantic search for potentially better retrieval.
-*   **Chat History:** Implement conversational memory to allow follow-up questions.
-*   **User Interface:** Develop a web interface (e.g., using Streamlit or Flask) for easier interaction.
-*   **Evaluation Pipeline:** Set up a more formal evaluation process using benchmark questions and metrics.
-*   **Logging and Monitoring:** Add robust logging to track system behavior and identify issues.
+*   **Реализация других загрузчиков данных:** Полностью реализуйте функции-заглушки в `index_data.py` для Markdown, Excel и SQLite, чтобы включить более широкий спектр знаний.
+*   **Продвинутые ретриверы:** Изучите более сложные ретриверы в LangChain:
+    *   `SelfQueryRetriever`: Позволяет LLM писать фильтры метаданных на основе запроса на естественном языке.
+    *   `ContextualCompressionRetriever`: Переранжирует и фильтрует извлеченные документы на основе контекста запроса.
+    *   Parent Document Retriever: Индексирует маленькие чанки, но извлекает более крупные родительские чанки для лучшего контекста.
+*   **Гибридный поиск:** Объедините поиск на основе ключевых слов (например, BM25) с семантическим поиском для потенциально лучшего извлечения.
+*   **История чата:** Реализуйте диалоговую память для поддержки уточняющих вопросов.
+*   **Пользовательский интерфейс:** Разработайте веб-интерфейс (например, с использованием Streamlit или Flask) для более удобного взаимодействия.
+*   **Конвейер оценки:** Настройте более формальный процесс оценки с использованием эталонных вопросов и метрик.
+*   **Логирование и мониторинг:** Добавьте надежное логирование для отслеживания поведения системы и выявления проблем.
 
-This README provides a comprehensive guide to setting up and using your 1C RAG system. Remember that experimentation is key to achieving the best results for your specific dataset and use case.
+Этот README предоставляет исчерпывающее руководство по настройке и использованию вашей RAG-системы для 1С. Помните, что экспериментирование является ключом к достижению наилучших результатов для вашего конкретного набора данных и варианта использования.
