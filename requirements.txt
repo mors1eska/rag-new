@@ -1,0 +1,12 @@
+langchain
+openai
+sentence-transformers
+huggingface_hub
+chromadb
+# faiss-cpu # Alternative vector store, CPU version. For GPU, use faiss-gpu
+pypdf
+unstructured[local-inference]
+pandas
+openpyxl # Required by pandas for Excel .xlsx files
+SQLAlchemy # For SQLite interaction via LangChain SQLDatabase
+python-dotenv
