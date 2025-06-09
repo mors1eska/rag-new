@@ -1,0 +1,19 @@
+.DS_Store
+.env
+data/УНФ/pdfs/Новое в версии 3.0.12 __ Информация об обновлениях программных продуктов 1С_Предприятие.pdf
+db_chroma/1bb4a672-ce8e-4a98-9750-44cf2cea3939/header.bin
+db_chroma/1bb4a672-ce8e-4a98-9750-44cf2cea3939/data_level0.bin
+db_chroma/chroma.sqlite3
+
+
+# ChromaDB хранилище
+db_chroma/
+
+# Виртуальное окружение
+.venv/
+
+# Переменные окружения
+.env
+
+# Базы данных
+data/
