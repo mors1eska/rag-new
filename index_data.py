@@ -1,7 +1,7 @@
 import os
 import glob
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader, PandasExcelLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -154,19 +154,27 @@ def load_process_markdown(config_specific_dir: str, section_name: str, text_spli
 
 
 def load_process_excel(config_specific_dir: str, section_name: str, text_splitter: RecursiveCharacterTextSplitter) -> list:
-    """
-    Заглушка для загрузки Excel файлов из поддиректории 'excel' внутри директории конфигурации.
-    (Будет реализовано позже)
-    """
     all_chunks = []
     excel_data_subdir = os.path.join(config_specific_dir, "excel")
-    print(f"  Загрузка Excel из: {excel_data_subdir} для раздела '{section_name}' (Заглушка - Не реализовано)")
+    print(f"  Загрузка Excel из: {excel_data_subdir} для раздела '{section_name}'")
     if not os.path.isdir(excel_data_subdir):
-        # print(f"    Каталог Excel не найден: {excel_data_subdir}")
         return all_chunks
-    # Пример структуры:
-    # for excel_file_path in glob.glob(os.path.join(excel_data_subdir, "*.xlsx"), recursive=False):
-    # ... (логика аналогична предыдущим, с учетом специфики Excel)
+
+    for excel_file_path in glob.glob(os.path.join(excel_data_subdir, "*.xlsx"), recursive=False):
+        try:
+            print(f"    Обработка Excel: {excel_file_path}")
+            loader = UnstructuredExcelLoader(excel_file_path)
+            documents = loader.load()
+            for doc in documents:
+                doc.metadata["source_type"] = "excel"
+                doc.metadata["file_name"] = os.path.basename(excel_file_path)
+                doc.metadata["full_path"] = excel_file_path
+                doc.metadata["1c_section"] = section_name
+            chunks = text_splitter.split_documents(documents)
+            all_chunks.extend(chunks)
+            print(f"      Загружено и разделено на {len(chunks)} чанков.")
+        except Exception as e:
+            print(f"      Ошибка при обработке Excel {excel_file_path}: {e}")
     return all_chunks
 
 
