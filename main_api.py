@@ -67,7 +67,7 @@ except Exception as e:
 try:
     if os.getenv("OPENAI_API_KEY"):
         print(f"Инициализация OpenAI LLM: {LLM_MODEL_NAME_OPENAI}...")
-        LLM = ChatOpenAI(temperature=0.7, model_name=LLM_MODEL_NAME_OPENAI)
+        LLM = ChatOpenAI(temperature=0.7, model=LLM_MODEL_NAME_OPENAI)
         print("LLM успешно инициализирована.")
     else:
         print("OPENAI_API_KEY не найден. LLM не может быть инициализирована.")
