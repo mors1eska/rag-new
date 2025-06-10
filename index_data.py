@@ -1,5 +1,7 @@
 import os
 import glob
+import json
+from collections import defaultdict
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -9,6 +11,17 @@ from langchain_openai import OpenAIEmbeddings
 # from langchain_community.document_loaders.sql_database import SQLDatabaseLoader # Пример, может потребовать кастомной обработки
 # from langchain_community.utilities.sql_database import SQLDatabase # Пример
 from langchain.schema import Document # Для создания документов из SQLite данных
+
+# Маппинг названий программ 1С из JSON -> папки конфигураций
+PROGRAM_TO_FOLDER_MAP = {
+    "1С:БП": "БП",
+    "1С:УНФ": "УНФ",
+    "1С:КА/ERP": "ERP",
+    "1С:Управление торговлей": "УТ",
+    "1С:КА": "КА",
+    "1С:ЗУП": "ЗУП",
+    # Добавляй по мере необходимости
+}
 
 # --- Конфигурация ---
 load_dotenv()  # Загрузка переменных окружения из файла .env
@@ -177,6 +190,45 @@ def load_process_excel(config_specific_dir: str, section_name: str, text_splitte
             print(f"      Ошибка при обработке Excel {excel_file_path}: {e}")
     return all_chunks
 
+def load_process_faq(config_specific_dir: str, section_name: str, text_splitter: RecursiveCharacterTextSplitter) -> list:
+    all_chunks = []
+    faq_data_subdir = os.path.join(config_specific_dir, "faq")
+    print(f"  Загрузка FAQ из: {faq_data_subdir} для раздела '{section_name}'")
+    if not os.path.isdir(faq_data_subdir):
+        return all_chunks
+
+    for faq_file_path in glob.glob(os.path.join(faq_data_subdir, "*.json"), recursive=False):
+        try:
+            print(f"    Обработка FAQ: {faq_file_path}")
+            with open(faq_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            documents = []
+            for item in data:
+                q = item.get("question", "").strip()
+                a = item.get("answer", "").strip()
+                if q and a:
+                    content = f"Вопрос: {q}\n\nОтвет: {a}"
+                    documents.append(Document(
+                        page_content=content,
+                        metadata={
+                            "source_type": "faq",
+                            "file_name": os.path.basename(faq_file_path),
+                            "full_path": faq_file_path,
+                            "1c_section": section_name,
+                            "url": item.get("url", ""),
+                            "date": item.get("date", ""),
+                            "question": item.get("question", "")
+                        }
+                    ))
+            # Используем стандартный, надежный метод для разделения документов на чанки
+            chunks = text_splitter.split_documents(documents)
+            all_chunks.extend(chunks)
+            print(f"      Загружено {len(documents)} FAQ, разделено на {len(chunks)} чанков.")
+        except Exception as e:
+            print(f"      Ошибка при обработке FAQ {faq_file_path}: {e}")
+    return all_chunks
+
 
 def load_process_sqlite(db_path: str, text_splitter: RecursiveCharacterTextSplitter) -> list:
     """
@@ -214,6 +266,39 @@ def load_process_sqlite(db_path: str, text_splitter: RecursiveCharacterTextSplit
 
 # --- Основная логика индексации ---
 
+def split_faq_json_by_program(source_dir: str, base_data_dir: str) -> None:
+    """
+    Ищет JSON-файлы в директории source_dir и разбивает их по программам,
+    записывая отдельные файлы в соответствующие папки внутри base_data_dir.
+    """
+    for json_file in glob.glob(os.path.join(source_dir, "*.json")):
+        try:
+            print(f"\n📦 Обнаружен общий FAQ-файл: {json_file}")
+            with open(json_file, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+
+            program_map = defaultdict(list)
+
+            for block in entries:
+                program = block.get("program", "Unknown").strip()
+                questions = block.get("questions", [])
+                program_map[program].extend(questions)
+
+            for program_name, qlist in program_map.items():
+                folder_name = PROGRAM_TO_FOLDER_MAP.get(program_name, program_name.replace("1С:", "").strip())
+                target_dir = os.path.join(base_data_dir, folder_name, "faq")
+                os.makedirs(target_dir, exist_ok=True)
+                output_path = os.path.join(target_dir, f"from_import_{os.path.basename(json_file)}")
+                with open(output_path, "w", encoding="utf-8") as out_f:
+                    json.dump(qlist, out_f, ensure_ascii=False, indent=2)
+                print(f"  ✅ Сохранено {len(qlist)} QA в {output_path}")
+            
+            # Удалим оригинальный файл после успешной обработки
+            os.remove(json_file)
+            print(f"  🗑️ Удалён исходный файл: {json_file}")
+        except Exception as e:
+            print(f"  ⚠️ Ошибка при разборе {json_file}: {e}")
+
 def main():
     """
     Основная функция для управления загрузкой, обработкой и индексацией данных.
@@ -234,8 +319,15 @@ def main():
         print(f"Ошибка: Базовая директория данных '{BASE_DATA_DIR}' не найдена.")
         return
 
+    # Предобработка FAQ-файлов общего назначения
+    shared_faq_import_dir = os.path.join(BASE_DATA_DIR, "faq_import")
+    if os.path.isdir(shared_faq_import_dir):
+        split_faq_json_by_program(shared_faq_import_dir, BASE_DATA_DIR)
+
     # Итерация по папкам конфигураций (УНФ, БП и т.д.) внутри BASE_DATA_DIR
     for section_folder_name in os.listdir(BASE_DATA_DIR):
+        if section_folder_name.startswith("."):
+            continue  # Пропустить скрытые папки (например, .DS_Store, .streamlit)
         config_specific_dir = os.path.join(BASE_DATA_DIR, section_folder_name)
         if os.path.isdir(config_specific_dir):
             # Проверяем, является ли имя папки одним из "известных" разделов,
@@ -251,6 +343,7 @@ def main():
             all_document_chunks.extend(load_process_pdfs(config_specific_dir, section_folder_name, text_splitter))
             all_document_chunks.extend(load_process_markdown(config_specific_dir, section_folder_name, text_splitter))
             all_document_chunks.extend(load_process_excel(config_specific_dir, section_folder_name, text_splitter))
+            all_document_chunks.extend(load_process_faq(config_specific_dir, section_folder_name, text_splitter))
             # SQLite обрабатывается отдельно, так как его структура не привязана к папкам конфигураций таким же образом
 
     # Загрузка данных из SQLite (обрабатывается отдельно)
@@ -262,6 +355,12 @@ def main():
         return
 
     print(f"\nВсего чанков документов для индексации: {len(all_document_chunks)}")
+
+    import shutil
+    # Очистка старой базы ChromaDB перед созданием новой
+    if os.path.exists(CHROMA_PERSIST_DIR):
+        print(f"Удаление старой базы данных Chroma: {CHROMA_PERSIST_DIR}")
+        shutil.rmtree(CHROMA_PERSIST_DIR)
 
     print(f"\nИнициализация векторного хранилища Chroma в: {CHROMA_PERSIST_DIR}")
     print(f"Используется имя коллекции: {CHROMA_COLLECTION_NAME}")

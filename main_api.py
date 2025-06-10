@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from typing import List, Optional, Dict, Any
+from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,6 +119,9 @@ class SourceDocument(BaseModel):
     db_table: Optional[str] = None
     record_id: Optional[str] = None
     content_snippet: Optional[str] = None # Добавим фрагмент контента
+    url: Optional[str] = None
+    date: Optional[str] = None
+    question: Optional[str] = None
 
 class QueryResponse(BaseModel):
     answer: str
@@ -130,6 +134,10 @@ app = FastAPI(
     description="Этот API позволяет выполнять запросы к проиндексированной базе знаний 1С.",
     version="1.0.0"
 )
+
+# Делает папку data/ доступной как /data/*
+if os.path.isdir("data"):
+    app.mount("/data", StaticFiles(directory="data"), name="data")
 
 # --- 6. CORS Middleware ---
 app.add_middleware(
@@ -193,6 +201,11 @@ async def execute_query(request: QueryRequest):
             print(f"Найдено {len(rag_result['source_documents'])} источников.")
             for doc in rag_result["source_documents"]:
                 metadata = doc.metadata
+                question = metadata.get("question")
+                # Если question пустой, пытаемся извлечь из page_content
+                if not question and doc.page_content.startswith("Вопрос:"):
+                    question = doc.page_content.split("\n")[0].replace("Вопрос:", "").strip()
+
                 source_doc = SourceDocument(
                     file_name=metadata.get("file_name"),
                     section_1c=metadata.get("1c_section"),
@@ -201,7 +214,10 @@ async def execute_query(request: QueryRequest):
                     page_number=metadata.get("page_number"),
                     db_table=metadata.get("db_table"),
                     record_id=metadata.get("record_id"),
-                    content_snippet=doc.page_content[:250] + "..." # Добавляем фрагмент
+                    content_snippet=(doc.page_content[:500] + "…") if len(doc.page_content) > 500 else doc.page_content,
+                    question=question,
+                    url=metadata.get("url"),
+                    date=metadata.get("date"),
                 )
                 sources_output.append(source_doc)
         else:
