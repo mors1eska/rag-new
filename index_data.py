@@ -174,12 +174,15 @@ def load_process_pdfs(config_specific_dir: str, section_name: str, text_splitter
 
             processed_docs_for_file = []
             for doc in documents:
+                 # Получаем 0-индексированный номер страницы. Если 'page' нет, используем -1.
+                original_page = doc.metadata.get('page', -1)
+                # Преобразуем его в 1-индексированный 'page_number'
+                page_num_1_indexed = original_page + 1
                 doc.metadata["source_type"] = "pdf"
                 doc.metadata["file_name"] = os.path.basename(pdf_file_path)
                 doc.metadata["full_path"] = pdf_file_path
                 doc.metadata["1c_section"] = section_name # Используем переданное имя раздела
-                if 'page' not in doc.metadata:
-                    doc.metadata['page_number'] = doc.metadata.get('page_number', -1) +1
+                doc.metadata['page_number'] = page_num_1_indexed # Используем 1-индексированный номер
                 processed_docs_for_file.append(doc)
 
             chunks = text_splitter.split_documents(processed_docs_for_file)
@@ -266,7 +269,7 @@ def load_process_faq(config_specific_dir: str, section_name: str, text_splitter:
                     documents.append(Document(
                         page_content=content,
                         metadata={
-                            "source_type": "faq",
+                            "source_type": item.get("source_type", "faq"), # Читаем source_type из элемента, по умолчанию 'faq'
                             "file_name": os.path.basename(faq_file_path),
                             "full_path": faq_file_path,
                             "1c_section": section_name,

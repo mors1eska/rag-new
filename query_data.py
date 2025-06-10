@@ -6,6 +6,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 # from langchain.llms import HuggingFacePipeline # Для использования локальных моделей HF
 from langchain.chains import RetrievalQA # Также можно использовать RetrievalQAWithSourcesChain
+from langchain.prompts import PromptTemplate # Импортируем PromptTemplate
 
 # --- Конфигурация ---
 load_dotenv()  # Загрузка переменных окружения из файла .env
@@ -26,6 +27,30 @@ LLM_PROVIDER = "openai"  # или "huggingface"
 
 # Известные разделы 1С (для текста справки, здесь не строгая валидация)
 KNOWN_1C_SECTIONS = ["УНФ", "БП", "ERP", "Розница", "ЗУП", "Unknown", "все"]
+
+# --- ОПРЕДЕЛЕНИЕ ПОЛЬЗОВАТЕЛЬСКОГО ПРОМПТА ---
+# Этот промпт инструктирует LLM, как форматировать ответ и включать ссылки.
+custom_prompt_template = """Используйте предоставленные фрагменты контекста, чтобы ответить на вопрос пользователя.
+Ответ должен быть полным, лаконичным, четким и написан на русском языке.
+Форматируйте ответ, используя синтаксис Markdown для улучшения читаемости:
+- Разделяйте текст на абзацы (используйте двойной перенос строки `\n\n`).
+- Используйте заголовки (например, `## Подзаголовок`) для структурирования информации.
+- Выделяйте ключевые термины **жирным шрифтом**.
+- Используйте списки (`- ` или `1. `), если это уместно для перечисления пунктов.
+
+КРАЙНЕ ВАЖНО: Включите ссылки на источники непосредственно в текст ответа, в конце предложений или абзацев, где информация была взята из контекста. Для каждого источника используйте формат `[Источник: <Имя_файла>/<Номер_страницы>]` или `[Источник: <Имя_файла>]`, если страницы нет. Если источник FAQ, используйте `[Источник: FAQ - <Вопрос_из_FAQ>]`. Старайтесь ссылаться на максимально точный источник.
+
+Если вы не можете найти ответ в предоставленных фрагментах контекста, просто ответьте: "Извините, я не могу найти информацию по вашему вопросу в доступных документах." Не пытайтесь выдумывать ответ или использовать свои общие знания.
+
+Контекст:
+{context}
+
+Вопрос: {question}
+
+Ответ:
+"""
+CUSTOM_RAG_PROMPT = PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
+
 
 # --- Вспомогательные функции ---
 
@@ -82,7 +107,8 @@ def main_query(user_query: str, section_filter: str = None):
     if not os.path.exists(CHROMA_PERSIST_DIR):
         print(f"Ошибка: Каталог для ChromaDB не найден по пути '{CHROMA_PERSIST_DIR}'.")
         print("Пожалуйста, сначала запустите скрипт `index_data.py` для создания и наполнения базы данных.")
-        return
+        return {'answer': "Ошибка: База данных знаний не найдена. Пожалуйста, запустите индексацию данных.", 'sources': []}
+
 
     print(f"Загрузка векторного хранилища Chroma из: {CHROMA_PERSIST_DIR}")
     try:
@@ -96,7 +122,8 @@ def main_query(user_query: str, section_filter: str = None):
     except Exception as e:
         print(f"Ошибка загрузки векторного хранилища Chroma: {e}")
         print("Убедитесь, что имя коллекции и функция для эмбеддингов совпадают с использованными при индексации.")
-        return
+        return {'answer': f"Ошибка загрузки базы данных: {e}", 'sources': []}
+
 
     # 3. Создание ретривера с опциональной фильтрацией
     retriever_search_kwargs = {}
@@ -113,68 +140,81 @@ def main_query(user_query: str, section_filter: str = None):
         )
     except Exception as e:
         print(f"Ошибка создания ретривера: {e}")
-        return
+        return {'answer': f"Ошибка создания ретривера: {e}", 'sources': []}
+
 
     # 4. Инициализация LLM
     try:
         llm = get_llm()
     except ValueError as e:
         print(e)
-        return
+        return {'answer': f"Ошибка инициализации LLM: {e}", 'sources': []}
     except NotImplementedError as e:
         print(e)
-        return
+        return {'answer': f"Ошибка инициализации LLM: {e}", 'sources': []}
 
 
     # 5. Создание QA цепочки
     # Использование RetrievalQA и установка return_source_documents=True
-    # Для RetrievalQAWithSourcesChain формат вывода немного отличается.
+    # Передаем наш пользовательский промпт
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
-        chain_type="stuff",  # Другие типы: "map_reduce", "refine", "map_rerank"
+        chain_type="stuff",
         retriever=retriever,
-        return_source_documents=True, # Важно для получения информации об источниках
-        # chain_type_kwargs={"prompt": YOUR_CUSTOM_PROMPT} # Необязательно
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": CUSTOM_RAG_PROMPT} 
     )
 
     print(f"\nВыполнение запроса: \"{user_query}\"")
 
     # 6. Выполнение запроса
     try:
-        result = qa_chain.invoke({"query": user_query}) # Стандарт Langchain LCEL
+        result = qa_chain.invoke({"query": user_query})
     except Exception as e:
         print(f"Ошибка во время выполнения запроса: {e}")
-        return
+        return {'answer': f"Ошибка во время выполнения запроса: {e}", 'sources': []}
 
-    # 7. Вывод результатов
-    print("\n--- Ответ ---")
-    print(result.get("result", "Ответ не найден."))
-
-    print("\n--- Источники ---")
+    # 7. Подготовка результатов для возврата (например, для API)
+    answer = result.get("result", "Ответ не найден.")
+    sources = []
     if "source_documents" in result and result["source_documents"]:
         for i, doc in enumerate(result["source_documents"]):
-            print(f"\nИсточник {i+1}:")
             metadata = doc.metadata
-            print(f"  Фрагмент содержимого: {doc.page_content[:200]}...") # Показать фрагмент
-            if "file_name" in metadata:
-                print(f"  Имя файла: {metadata.get('file_name')}")
-            if "full_path" in metadata:
-                print(f"  Полный путь: {metadata.get('full_path')}")
-            if "source_type" in metadata:
-                print(f"  Тип источника: {metadata.get('source_type')}")
-            if "1c_section" in metadata:
-                print(f"  Раздел 1С: {metadata.get('1c_section')}")
-            if "page_number" in metadata: # Для PDF
-                 print(f"  Номер страницы: {metadata.get('page_number')}")
-            if "db_table" in metadata: # Для SQLite
-                print(f"  Таблица БД: {metadata.get('db_table')}")
-                print(f"  ID записи: {metadata.get('record_id')}")
-            # Добавьте другие релевантные поля метаданных, которые вы проиндексировали
+            source_info = {
+                "content_snippet": doc.page_content, # Отправляем весь контент, UI обрежет
+                "file_name": metadata.get('file_name'),
+                "full_path": metadata.get('full_path'),
+                "source_type": metadata.get('source_type'),
+                "section_1c": metadata.get('1c_section'),
+                "page_number": metadata.get('page_number'), # Для PDF
+                "db_table": metadata.get('db_table'), # Для SQLite
+                "record_id": metadata.get('record_id'), # Для SQLite
+                "url": metadata.get('url'), # Для FAQ/web
+                "question": metadata.get('question'), # Для FAQ
+                "date": metadata.get('date'), # Для FAQ
+                "code": metadata.get('code'), # Для FAQ
+                "subsection": metadata.get('subsection') # Для FAQ
+                # Добавьте другие релевантные поля метаданных
+            }
+            sources.append(source_info)
+    
+    # Также выведем в консоль для отладки (как было)
+    print("\n--- Ответ ---")
+    print(answer)
+    print("\n--- Источники (для консоли) ---")
+    if sources:
+        for i, source in enumerate(sources):
+            print(f"\nИсточник {i+1}:")
+            print(f"  Фрагмент содержимого: {source['content_snippet'][:200]}...")
+            for key, value in source.items():
+                if key != "content_snippet" and value is not None:
+                    print(f"  {key.replace('_', ' ').capitalize()}: {value}")
             print("-" * 20)
     else:
         print("Источники для этого ответа не найдены или не возвращены.")
-
     print("\nПроцесс выполнения запроса завершен.")
+
+    return {'answer': answer, 'sources': sources}
 
 
 # --- Интерфейс командной строки ---
@@ -208,7 +248,8 @@ if __name__ == "__main__":
     if args.section:
         print(f"Фильтр по разделу 1С: {args.section}")
 
-    main_query(args.query, args.section)
+    # Изменено: теперь main_query возвращает словарь, который можно использовать
+    response_data = main_query(args.query, args.section)
 
     print("\n--- Пример использования ---")
     print("python query_data.py \"Как настроить резервное копирование в УНФ?\" --section УНФ")
