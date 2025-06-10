@@ -37,7 +37,7 @@ print(f"USE_OPENAI_EMBEDDINGS: {USE_OPENAI_EMBEDDINGS}")
 EMBEDDING_MODEL = None
 LLM = None
 VECTORSTORE = None
-QA_CHAIN = None # Будет инициализироваться для каждого запроса с нужным ретривером
+# QA_CHAIN = None # Глобальная переменная QA_CHAIN не используется, т.к. создается в эндпоинте
 
 # Инициализация модели для эмбеддингов
 try:
@@ -90,12 +90,9 @@ if EMBEDDING_MODEL: # Продолжаем, только если модель �
                 embedding_function=EMBEDDING_MODEL,
                 persist_directory=CHROMA_PERSIST_DIR
             )
-            # Проверка, есть ли документы в коллекции
-            # collection_count = VECTORSTORE._collection.count() # Это может быть внутренним API Chroma
-            # print(f"Количество документов в коллекции '{CHROMA_COLLECTION_NAME}': {collection_count}")
-            # if collection_count == 0:
-            #     print("ПРЕДУПРЕЖДЕНИЕ: Коллекция ChromaDB пуста. API будет возвращать пустые ответы.")
-            print("Chroma vector store успешно загружен.")
+            # collection_count = VECTORSTORE._collection.count() # Example check, can be removed
+            # print(f"Collection '{CHROMA_COLLECTION_NAME}' document count: {collection_count}")
+            print("Chroma vector store successfully loaded.")
         except Exception as e:
             print(f"Ошибка при загрузке Chroma vector store: {e}")
             VECTORSTORE = None
@@ -117,24 +114,29 @@ class QueryRequest(BaseModel):
 
 class EnsembleQueryRequest(BaseModel):
     query: str
-    top_k: Optional[int] = 10
-    top_n_individual: Optional[int] = 10
-    weights: Optional[Dict[str, float]] = None
-    section: Optional[str] = "все" # Для semantic_search фильтрации
-    filter_after_merge: Optional[Dict[str, str]] = None # New field for post-merge filtering
+    top_k: Optional[int] = 10 # Number of final results to return from the ensemble
+    top_n_individual: Optional[int] = 10 # Number of results to fetch from each individual search method
+    weights: Optional[Dict[str, float]] = None # Weights for 'semantic', 'tfidf', 'fts'
+    section: Optional[str] = "все" # Section filter for semantic search (applied before merge)
+    filter_after_merge: Optional[Dict[str, str]] = None # Filters to apply on metadata after merging
 
 class SourceDocument(BaseModel):
+    # Existing fields
     file_name: Optional[str] = None
-    section_1c: Optional[str] = None # Используем snake_case для Pydantic, FastAPI преобразует в camelCase в JSON
+    section_1c: Optional[str] = None
     source_type: Optional[str] = None
     full_path: Optional[str] = None
     page_number: Optional[int] = None
     db_table: Optional[str] = None
     record_id: Optional[str] = None
-    content_snippet: Optional[str] = None # Добавим фрагмент контента
+    content_snippet: Optional[str] = None
     url: Optional[str] = None
     date: Optional[str] = None
     question: Optional[str] = None
+
+    # New fields for ensemble results
+    ensemble_score: Optional[float] = None
+    retrieval_source: Optional[str] = None # To indicate original source type like 'semantic', 'TF-IDF', 'FTS' if needed
 
 class QueryResponse(BaseModel):
     answer: str
@@ -242,8 +244,7 @@ async def execute_query(request: QueryRequest):
 
     except Exception as e:
         print(f"Ошибка при обработке запроса: {e}")
-        # Можно добавить более детальное логирование ошибки здесь, если нужно
-        # import traceback
+        # import traceback # For detailed debugging if needed
         # print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера при обработке запроса: {str(e)}")
 
@@ -384,9 +385,27 @@ async def execute_ensemble_query(request: EnsembleQueryRequest):
 
                 # Чтобы оценка была видна, временно добавим ее в начало сниппета.
                 # Это не идеальное решение, лучше модифицировать SourceDocument.
-                source_doc.content_snippet = f"[Score: {aggregated_score:.4f}] {source_doc.content_snippet}"
+                # source_doc.content_snippet = f"[Score: {aggregated_score:.4f}] {source_doc.content_snippet}"
+                # Вместо этого добавляем в метаданные:
+                # retrieved_metadata['ensemble_score'] = aggregated_score # No longer needed if fields exist
+                # retrieved_metadata['original_retrieval_score'] = details.get("original_score")
+                # retrieved_metadata['retrieval_source_type'] = details.get("source_type_from_meta")
 
-
+                source_doc = SourceDocument(
+                    file_name=retrieved_metadata.get("file_name"),
+                    section_1c=retrieved_metadata.get("1c_section"),
+                    source_type=retrieved_metadata.get("source_type", details.get("source_type_from_meta")),
+                    full_path=retrieved_metadata.get("full_path"),
+                    page_number=retrieved_metadata.get("page_number"),
+                    db_table=retrieved_metadata.get("db_table"),
+                    record_id=retrieved_metadata.get("record_id"),
+                    content_snippet=(content_snippet[:500] + "…") if len(content_snippet) > 500 else content_snippet,
+                    question=question,
+                    url=retrieved_metadata.get("url"),
+                    date=retrieved_metadata.get("date"),
+                    ensemble_score=aggregated_score, # Assign to the new field
+                    retrieval_source=details.get("source_type_from_meta") # Assign to the new field
+                )
                 output_sources.append(source_doc)
             else:
                 print(f"Предупреждение: Детали для doc_id '{doc_id}' не найдены в details_map.")
@@ -401,7 +420,7 @@ async def execute_ensemble_query(request: EnsembleQueryRequest):
         raise http_exc
     except Exception as e:
         print(f"Критическая ошибка при обработке запроса ансамбля: {e}")
-        # import traceback
+        # import traceback # For detailed debugging if needed
         # print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера при обработке запроса ансамбля: {str(e)}")
 
