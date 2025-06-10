@@ -1,3 +1,57 @@
+def convert_excel_to_faq_format(xlsx_path: str, mapping_path: str = None):
+    import pandas as pd
+    from pathlib import Path
+    import os
+    import json
+    from collections import defaultdict
+    df = pd.read_excel(xlsx_path)
+    import json
+    mapping_data = {}
+    if mapping_path and os.path.exists(mapping_path):
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            mapping_data = json.load(f)
+
+    mapping_entry = mapping_data.get(os.path.basename(xlsx_path))
+    if not mapping_entry:
+        print(f"❌ Нет маппинга для {xlsx_path} в {mapping_path}")
+        return
+
+    source_type_label = mapping_entry.get("source_type", "unknown")
+    program_map = mapping_entry.get("program_map", {})
+    required_columns = ["Наименование", "Номер", "Ссылка", "Описание", "Компоненты", "Разделы"]
+    for col in required_columns:
+        if col not in df.columns:
+            print(f"❌ Отсутствует колонка: {col}")
+            return
+
+    grouped_data = defaultdict(list)
+    for _, row in df.iterrows():
+        name = str(row["Наименование"]).strip()
+        answer = str(row["Описание"]).strip()
+        if not name or not answer:
+            continue
+        raw_components = str(row["Компоненты"]).split("/")
+        for comp in raw_components:
+            comp = comp.strip()
+            folder = program_map.get(comp)
+            if not folder:
+                continue
+            target_dir = os.path.join(BASE_DATA_DIR, folder, "faq")
+            os.makedirs(target_dir, exist_ok=True)
+            output_path = os.path.join(target_dir, f"from_excel_SD_1cfresh.json")
+            grouped_data[output_path].append({
+                "question": name,
+                "answer": answer,
+                "url": str(row["Ссылка"]).strip(),
+                "source_type": source_type_label,
+                "code": str(row["Номер"]).strip(),
+                "subsection": str(row["Разделы"]).strip()
+            })
+
+    for path, records in grouped_data.items():
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        print(f"✅ Сохранено {len(records)} записей в {path}")
 import os
 import glob
 import json
@@ -271,7 +325,14 @@ def split_faq_json_by_program(source_dir: str, base_data_dir: str) -> None:
     Ищет JSON-файлы в директории source_dir и разбивает их по программам,
     записывая отдельные файлы в соответствующие папки внутри base_data_dir.
     """
+    json_mapping_path = os.path.join(source_dir, "mappings.json")
+    json_program_map = {}
+    if os.path.exists(json_mapping_path):
+        with open(json_mapping_path, "r", encoding="utf-8") as f:
+            json_program_map = json.load(f).get("json_program_map", {})
     for json_file in glob.glob(os.path.join(source_dir, "*.json")):
+        if os.path.basename(json_file) == "mappings.json":
+            continue  # пропускаем mappings.json
         try:
             print(f"\n📦 Обнаружен общий FAQ-файл: {json_file}")
             with open(json_file, "r", encoding="utf-8") as f:
@@ -285,7 +346,7 @@ def split_faq_json_by_program(source_dir: str, base_data_dir: str) -> None:
                 program_map[program].extend(questions)
 
             for program_name, qlist in program_map.items():
-                folder_name = PROGRAM_TO_FOLDER_MAP.get(program_name, program_name.replace("1С:", "").strip())
+                folder_name = json_program_map.get(program_name, program_name.replace("1С:", "").strip())
                 target_dir = os.path.join(base_data_dir, folder_name, "faq")
                 os.makedirs(target_dir, exist_ok=True)
                 output_path = os.path.join(target_dir, f"from_import_{os.path.basename(json_file)}")
@@ -320,9 +381,20 @@ def main():
         return
 
     # Предобработка FAQ-файлов общего назначения
-    shared_faq_import_dir = os.path.join(BASE_DATA_DIR, "faq_import")
-    if os.path.isdir(shared_faq_import_dir):
-        split_faq_json_by_program(shared_faq_import_dir, BASE_DATA_DIR)
+    shared_import_dir = os.path.join(BASE_DATA_DIR, "import")
+    if os.path.isdir(shared_import_dir):
+        split_faq_json_by_program(shared_import_dir, BASE_DATA_DIR)
+
+    # Импорт Excel-файла в формат FAQ, если он существует
+    excel_import_file = os.path.join(BASE_DATA_DIR, "import", "kb_import.xlsx")
+    mappings_path = os.path.join(BASE_DATA_DIR, "import", "mappings.json")
+    if os.path.exists(excel_import_file):
+        convert_excel_to_faq_format(excel_import_file, mapping_path=mappings_path)
+        try:
+            os.remove(excel_import_file)
+            print(f"🗑️ Удалён импортированный Excel-файл: {excel_import_file}")
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить Excel-файл {excel_import_file}: {e}")
 
     # Итерация по папкам конфигураций (УНФ, БП и т.д.) внутри BASE_DATA_DIR
     for section_folder_name in os.listdir(BASE_DATA_DIR):
