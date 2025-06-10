@@ -65,6 +65,9 @@ from langchain_openai import OpenAIEmbeddings
 # from langchain_community.document_loaders.sql_database import SQLDatabaseLoader # Пример, может потребовать кастомной обработки
 # from langchain_community.utilities.sql_database import SQLDatabase # Пример
 from langchain.schema import Document # Для создания документов из SQLite данных
+from sklearn.feature_extraction.text import TfidfVectorizer
+import joblib
+import sqlite3
 
 # Маппинг названий программ 1С из JSON -> папки конфигураций
 PROGRAM_TO_FOLDER_MAP = {
@@ -83,6 +86,7 @@ load_dotenv()  # Загрузка переменных окружения из �
 # Базовый путь к данным
 BASE_DATA_DIR = "data" # Родительская директория для папок конфигураций (УНФ, БП и т.д.)
 SQLITE_DB_PATH = os.path.join(BASE_DATA_DIR, "database", "1c_knowledge_base.db") # Путь к БД SQLite остается специфичным
+SQLITE_FTS_TABLE = "documents_fts"
 
 # Конфигурация ChromaDB
 CHROMA_PERSIST_DIR = "db_chroma"
@@ -428,18 +432,155 @@ def main():
 
     print(f"\nВсего чанков документов для индексации: {len(all_document_chunks)}")
 
+    # --- Начало индексации в SQLite FTS ---
+    print(f"\nНачало индексации в SQLite FTS DB: {SQLITE_DB_PATH}")
+    conn = None
+    try:
+        # Убедимся, что директория для БД существует
+        db_dir = os.path.dirname(SQLITE_DB_PATH)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir)
+            print(f"  Создана директория для SQLite БД: {db_dir}")
+
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+
+        # Создание FTS таблицы, если она не существует
+        # doc_id должен быть уникальным для корректной работы INSERT OR REPLACE
+        # Используем full_path + номер чанка для уникальности, если документ разделен на чанки
+        create_table_sql = f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {SQLITE_FTS_TABLE} (
+            doc_id TEXT UNIQUE,
+            content TEXT,
+            tokenize = 'porter unicode61'
+        );
+        """
+        cursor.execute(create_table_sql)
+        print(f"  FTS таблица '{SQLITE_FTS_TABLE}' готова/создана.")
+
+        # Удаление старых записей перед вставкой новых (если это необходимо)
+        # Например, если идентификаторы могут меняться или документы удаляются
+        # cursor.execute(f"DELETE FROM {SQLITE_FTS_TABLE};")
+        # print(f"  Старые записи из '{SQLITE_FTS_TABLE}' удалены (если были).")
+
+
+        inserted_count = 0
+        if all_document_chunks:
+            for i, doc_chunk in enumerate(all_document_chunks):
+                content = doc_chunk.page_content
+                # Создание уникального doc_id для каждого чанка
+                base_path = doc_chunk.metadata.get('full_path', doc_chunk.metadata.get('file_name', f"unknown_doc_{i}"))
+                page_num = doc_chunk.metadata.get('page_number', -1) # -1 если нет номера страницы
+
+                # Для уникальности ID чанка, можно добавить номер страницы и индекс чанка (если один документ дает много чанков)
+                # Однако, text_splitter обычно не добавляет индекс чанка в метаданные.
+                # Если full_path + page_number достаточно уникальны для чанка, используем их.
+                # Если документ не PDF и не имеет страниц, page_num будет -1.
+                # Простой ID на основе индекса чанка в all_document_chunks для гарантии уникальности.
+                chunk_specific_id = f"_chunk_{i}" # Добавляем индекс чанка ко всем ID для уникальности
+
+                doc_id = f"{base_path}_page_{page_num}{chunk_specific_id}" if page_num != -1 else f"{base_path}{chunk_specific_id}"
+
+                if not content.strip(): # Пропускаем пустые чанки
+                    print(f"    Пропущен пустой чанк для doc_id: {doc_id}")
+                    continue
+
+                try:
+                    cursor.execute(
+                        f"INSERT OR REPLACE INTO {SQLITE_FTS_TABLE} (doc_id, content) VALUES (?, ?)",
+                        (doc_id, content)
+                    )
+                    inserted_count += 1
+                except sqlite3.IntegrityError as ie: # Должно быть обработано INSERT OR REPLACE, но на всякий случай
+                    print(f"    Ошибка целостности при вставке doc_id {doc_id}: {ie}. Возможно, проблема с UNIQUE constraint, если doc_id не уникален.")
+                except Exception as e_insert:
+                    print(f"    Ошибка при вставке чанка для doc_id {doc_id}: {e_insert}")
+
+
+            conn.commit()
+            print(f"  Успешно вставлено/заменено {inserted_count} чанков в FTS таблицу.")
+        else:
+            print("  Нет чанков для индексации в SQLite FTS.")
+
+    except sqlite3.Error as e:
+        print(f"  Ошибка SQLite: {e}")
+    except Exception as e_global:
+        print(f"  Непредвиденная ошибка при работе с SQLite: {e_global}")
+    finally:
+        if conn:
+            conn.close()
+            print(f"  Соединение с SQLite ({SQLITE_DB_PATH}) закрыто.")
+    print("--- Индексация в SQLite FTS завершена ---")
+
+
     import shutil
-    # Очистка старой базы ChromaDB перед созданием новой
+    # Очистка старой базы ChromaDB и/или TF-IDF артефактов перед созданием новой
+    # Это важно, чтобы избежать конфликтов или использования устаревших данных.
+    # Если CHROMA_PERSIST_DIR используется и для Chroma, и для TF-IDF, rmtree очистит всё.
     if os.path.exists(CHROMA_PERSIST_DIR):
-        print(f"Удаление старой базы данных Chroma: {CHROMA_PERSIST_DIR}")
+        print(f"Удаление старой директории для хранения Chroma и TF-IDF: {CHROMA_PERSIST_DIR}")
+        # В реальном сценарии здесь может быть более гранулярная очистка,
+        # например, удаление только поддиректории Chroma или определенных файлов.
+        # Для данного задания, если директория существует, предполагаем, что ее можно пересоздать.
         shutil.rmtree(CHROMA_PERSIST_DIR)
+
+    # Гарантируем, что директория существует перед любыми операциями записи
+    if not os.path.exists(CHROMA_PERSIST_DIR):
+        os.makedirs(CHROMA_PERSIST_DIR)
+        print(f"Создан каталог для Chroma и TF-IDF: {CHROMA_PERSIST_DIR}")
+
+    # --- Генерация и сохранение TF-IDF ---
+    print("\nГенерация TF-IDF векторов...")
+    try:
+        if all_document_chunks:
+            texts = [doc.page_content for doc in all_document_chunks]
+            # Обеспечиваем уникальный идентификатор для каждого документа
+            doc_ids = []
+            for i, doc in enumerate(all_document_chunks):
+                # Пытаемся получить 'full_path', если нет, то 'file_name', если нет, то генерируем уникальный ID
+                path = doc.metadata.get('full_path', doc.metadata.get('file_name'))
+                if path:
+                    doc_ids.append(path)
+                else:
+                    # Если путь не доступен, создаем идентификатор на основе индекса и типа источника
+                    source_type = doc.metadata.get('source_type', 'unknown_source')
+                    doc_ids.append(f"{source_type}_{i}")
+
+            if texts:
+                tfidf_vectorizer = TfidfVectorizer(
+                    max_df=0.95,
+                    min_df=2,
+                    ngram_range=(1, 2),
+                    stop_words=None # Для русского языка нужны специфичные стоп-слова или их отсутствие
+                                    # Можно рассмотреть 'russian' если scikit-learn поддерживает или использовать внешнюю библиотеку
+                )
+                tfidf_matrix = tfidf_vectorizer.fit_transform(texts)
+
+                tfidf_model_path = os.path.join(CHROMA_PERSIST_DIR, "tfidf_model.joblib")
+                tfidf_vectors_path = os.path.join(CHROMA_PERSIST_DIR, "tfidf_vectors_and_ids.joblib")
+
+                joblib.dump(tfidf_vectorizer, tfidf_model_path)
+                print(f"  TF-IDF модель сохранена в: {tfidf_model_path}")
+
+                joblib.dump({'ids': doc_ids, 'vectors': tfidf_matrix}, tfidf_vectors_path)
+                print(f"  TF-IDF векторы и идентификаторы сохранены в: {tfidf_vectors_path}")
+                print(f"  Размерность TF-IDF матрицы: {tfidf_matrix.shape}")
+            else:
+                print("  Нет текстовых данных для генерации TF-IDF (список текстов пуст).")
+        else:
+            print("  Нет чанков документов для генерации TF-IDF.")
+
+    except Exception as e:
+        print(f"  Ошибка при генерации или сохранении TF-IDF: {e}")
+    print("--- Генерация TF-IDF завершена ---")
+    # --- Конец генерации TF-IDF ---
 
     print(f"\nИнициализация векторного хранилища Chroma в: {CHROMA_PERSIST_DIR}")
     print(f"Используется имя коллекции: {CHROMA_COLLECTION_NAME}")
 
-    if not os.path.exists(CHROMA_PERSIST_DIR):
-        os.makedirs(CHROMA_PERSIST_DIR)
-        print(f"Создан каталог для Chroma: {CHROMA_PERSIST_DIR}")
+    # На этом этапе CHROMA_PERSIST_DIR уже должен существовать.
+    # Если он был удален и не создан снова до этого момента, Chroma.from_documents может выдать ошибку.
+    # Но мы уже создали его выше.
 
     try:
         vector_store = Chroma.from_documents(

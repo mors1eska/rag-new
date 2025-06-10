@@ -104,11 +104,24 @@ else:
     VECTORSTORE = None
 
 
+from query_data import semantic_search, tfidf_search, fts_search # Added
+from ensemble_logic import ensemble_merge # Added
+# Ensure Tuple is imported if not already (it should be part of List, Optional, Dict, Any)
+from typing import List, Optional, Dict, Any, Tuple # Added Tuple explicitly for clarity
+
 # --- 4. Pydantic Модели ---
 class QueryRequest(BaseModel):
     query: str
     section: Optional[str] = "все" # По умолчанию "все", если не указано
     # top_k: Optional[int] = 5 # Можно добавить для настройки количества извлекаемых документов
+
+class EnsembleQueryRequest(BaseModel):
+    query: str
+    top_k: Optional[int] = 10
+    top_n_individual: Optional[int] = 10
+    weights: Optional[Dict[str, float]] = None
+    section: Optional[str] = "все" # Для semantic_search фильтрации
+    filter_after_merge: Optional[Dict[str, str]] = None # New field for post-merge filtering
 
 class SourceDocument(BaseModel):
     file_name: Optional[str] = None
@@ -234,17 +247,178 @@ async def execute_query(request: QueryRequest):
         # print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера при обработке запроса: {str(e)}")
 
+
+# --- 8. Endpoint /ensemble_query/ (POST) ---
+@app.post("/ensemble_query/", response_model=QueryResponse)
+async def execute_ensemble_query(request: EnsembleQueryRequest):
+    print(f"\nПолучен запрос на /ensemble_query/: {request.dict()}")
+
+    # Проверка наличия основных компонентов (аналогично /query/)
+    if not EMBEDDING_MODEL: # Needed for semantic search part of ensemble
+        print("Ошибка API: Модель для эмбеддингов не инициализирована.")
+        raise HTTPException(status_code=500, detail="Ошибка сервера: модель для эмбеддингов не сконфигурирована.")
+    # LLM не используется напрямую в этом эндпоинте, только ретриверы
+
+    actual_weights = request.weights
+    if actual_weights is None:
+        actual_weights = {"semantic": 0.5, "tfidf": 0.3, "fts": 0.2} # Default weights
+    print(f"Используемые веса для ансамблирования: {actual_weights}")
+
+    try:
+        # 1. Вызов индивидуальных функций поиска
+        # Запускаем синхронные функции в ThreadPoolExecutor, чтобы не блокировать event loop FastAPI
+        print(f"Запрос к semantic_search (top_n={request.top_n_individual}, section='{request.section}')...")
+        rich_semantic_results: List[Tuple[str, float, Dict, str]] = await app.loop.run_in_executor(
+            None, semantic_search, request.query, request.top_n_individual, request.section
+        )
+        print(f"Получено {len(rich_semantic_results)} результатов от semantic_search.")
+
+        print(f"Запрос к tfidf_search (top_n={request.top_n_individual})...")
+        rich_tfidf_results: List[Tuple[str, float, Dict, str]] = await app.loop.run_in_executor(
+            None, tfidf_search, request.query, request.top_n_individual
+        )
+        print(f"Получено {len(rich_tfidf_results)} результатов от tfidf_search.")
+
+        print(f"Запрос к fts_search (top_n={request.top_n_individual})...")
+        rich_fts_results: List[Tuple[str, float, Dict, str]] = await app.loop.run_in_executor(
+            None, fts_search, request.query, request.top_n_individual
+        )
+        print(f"Получено {len(rich_fts_results)} результатов от fts_search.")
+
+        # 2. Кеширование "богатых" результатов для последующего извлечения деталей
+        details_map: Dict[str, Dict[str, Any]] = {}
+        all_rich_results = rich_semantic_results + rich_tfidf_results + rich_fts_results
+
+        for res_tuple in all_rich_results:
+            if len(res_tuple) == 4: # Ожидаем (doc_id, score, metadata, snippet)
+                doc_id, original_score, metadata, snippet = res_tuple
+                if doc_id not in details_map: # Сохраняем первый встреченный (можно улучшить стратегию)
+                    details_map[doc_id] = {
+                        "metadata": metadata,
+                        "snippet": snippet,
+                        "original_score": original_score, # Может быть полезно для отладки
+                        # Определяем источник для отладки, если он есть в метаданных
+                        "source_type_from_meta": metadata.get("source", "unknown")
+                    }
+            else:
+                print(f"Предупреждение: Некорректный формат кортежа в all_rich_results: {res_tuple}")
+
+
+        print(f"Создана карта деталей (details_map) с {len(details_map)} уникальными doc_id.")
+
+        # 3. Подготовка упрощенных результатов для ensemble_merge
+        simple_semantic = [(r[0], r[1]) for r in rich_semantic_results if len(r) == 4]
+        simple_tfidf = [(r[0], r[1]) for r in rich_tfidf_results if len(r) == 4]
+        simple_fts = [(r[0], r[1]) for r in rich_fts_results if len(r) == 4]
+
+        # 4. Вызов ensemble_merge
+        print("Вызов ensemble_merge...")
+        # ensemble_merge может быть CPU-bound, если списки большие, тоже можно в executor
+        merged_results: List[Tuple[str, float]] = await app.loop.run_in_executor(
+            None, ensemble_merge, simple_semantic, simple_tfidf, simple_fts, actual_weights, request.top_k
+        )
+        print(f"Получено {len(merged_results)} результатов после ансамблирования.")
+
+        # 4.5 Фильтрация после ансамблирования (если заданы критерии)
+        final_results_to_process: List[Tuple[str, float]] = []
+        filtering_applied_message = ""
+
+        if request.filter_after_merge and request.filter_after_merge.items():
+            print(f"Применение фильтрации после ансамблирования: {request.filter_after_merge}")
+            for doc_id, aggregated_score in merged_results:
+                details = details_map.get(doc_id)
+                if details:
+                    retrieved_metadata = details.get("metadata", {})
+                    match = True
+                    for filter_key, filter_value in request.filter_after_merge.items():
+                        if str(retrieved_metadata.get(filter_key, '')).strip() != str(filter_value).strip():
+                            match = False
+                            break
+                    if match:
+                        final_results_to_process.append((doc_id, aggregated_score))
+            print(f"Количество результатов после фильтрации: {len(final_results_to_process)}")
+            filtering_applied_message = " и последующей фильтрации"
+        else:
+            final_results_to_process = merged_results
+            print("Фильтрация после ансамблирования не применялась.")
+
+        # 5. Формирование ответа
+        output_sources: List[SourceDocument] = []
+        for doc_id, aggregated_score in final_results_to_process: # Используем отфильтрованные результаты
+            details = details_map.get(doc_id)
+            if details:
+                retrieved_metadata = details.get("metadata", {})
+                # Добавляем агрегированный балл и исходный балл (если нужно) в метаданные
+                retrieved_metadata['ensemble_score'] = aggregated_score
+                # retrieved_metadata['original_retrieval_score'] = details.get("original_score")
+                # retrieved_metadata['retrieval_source_type'] = details.get("source_type_from_meta")
+
+
+                # Создаем SourceDocument, как в /query/ эндпоинте
+                question = retrieved_metadata.get("question")
+                content_snippet = details.get("snippet", "")
+                if not question and content_snippet.startswith("Вопрос:"):
+                     question = content_snippet.split("\n")[0].replace("Вопрос:", "").strip()
+
+
+                source_doc = SourceDocument(
+                    file_name=retrieved_metadata.get("file_name"),
+                    section_1c=retrieved_metadata.get("1c_section"),
+                    source_type=retrieved_metadata.get("source_type", details.get("source_type_from_meta")), # Приоритет metadata, потом из details_map
+                    full_path=retrieved_metadata.get("full_path"),
+                    page_number=retrieved_metadata.get("page_number"),
+                    db_table=retrieved_metadata.get("db_table"), # Если есть
+                    record_id=retrieved_metadata.get("record_id"), # Если есть
+                    content_snippet=(content_snippet[:500] + "…") if len(content_snippet) > 500 else content_snippet,
+                    question=question,
+                    url=retrieved_metadata.get("url"),
+                    date=retrieved_metadata.get("date"),
+                    # Добавляем кастомные поля в метаданные, если SourceDocument их не поддерживает напрямую
+                    # ensemble_score=aggregated_score # Это поле нужно добавить в SourceDocument или передавать иначе
+                )
+                # Пока что ensemble_score не является частью SourceDocument, его можно добавить в content_snippet или metadata, если нужно его видеть в ответе.
+                # Для структурированного ответа лучше расширить SourceDocument или создать новую модель ответа.
+                # В данном случае, если 'ensemble_score' добавлено в retrieved_metadata, оно будет частью "сырых" метаданных.
+                # Если нужно его явно в ответе, то SourceDocument должен иметь поле ensemble_score: Optional[float] = None
+                # и тогда source_doc.ensemble_score = aggregated_score
+
+                # Чтобы оценка была видна, временно добавим ее в начало сниппета.
+                # Это не идеальное решение, лучше модифицировать SourceDocument.
+                source_doc.content_snippet = f"[Score: {aggregated_score:.4f}] {source_doc.content_snippet}"
+
+
+                output_sources.append(source_doc)
+            else:
+                print(f"Предупреждение: Детали для doc_id '{doc_id}' не найдены в details_map.")
+
+        answer = f"Ensemble search completed. Found {len(output_sources)} relevant documents after merging{filtering_applied_message}."
+        response_data = QueryResponse(answer=answer, sources=output_sources)
+        print(f"Ответ API (ансамбль): {response_data.dict(exclude_none=True)}")
+        return response_data
+
+    except HTTPException as http_exc:
+        # Перебрасываем HTTPException дальше
+        raise http_exc
+    except Exception as e:
+        print(f"Критическая ошибка при обработке запроса ансамбля: {e}")
+        # import traceback
+        # print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера при обработке запроса ансамбля: {str(e)}")
+
+
 @app.get("/")
 async def root():
-    return {"message": "API для RAG системы по базе знаний 1С. Используйте POST /query/ для отправки запросов."}
+    return {"message": "API для RAG системы по базе знаний 1С. Используйте POST /query/ или POST /ensemble_query/ для отправки запросов."}
 
-# --- 8. Комментарий для запуска Uvicorn ---
+# --- 9. Комментарий для запуска Uvicorn ---
 # Для запуска этого API используйте команду в терминале (в активированном виртуальном окружении):
 # uvicorn main_api:app --reload --port 8000
 #
 # Убедитесь, что:
 # 1. Файл .env существует и содержит OPENAI_API_KEY (если используется OpenAI).
-# 2. Директория db_chroma существует и содержит проиндексированные данные (создается скриптом index_data.py).
+# 2. Директория db_chroma существует и содержит проиндексированные данные.
+# 3. Файл базы данных SQLite (1c_knowledge_base.db) существует и содержит FTS-таблицу.
+# 4. Файлы TF-IDF модели и векторов существуют в db_chroma.
 
 if __name__ == "__main__":
     print("Для запуска API, пожалуйста, используйте Uvicorn:")
