@@ -27,8 +27,16 @@ echo "🧩 Запускаем сервер раздачи статики (serve_
 uvicorn serve_static_files:app --host 127.0.0.1 --port 8600 --reload &
 STATIC_PID=$!
 
-# ⏳ Подождём немного
-sleep 2
+# ⏳ Ждём, пока FastAPI не станет доступен
+echo "⏳ Ожидание готовности FastAPI..."
+for i in {1..10}; do
+  if curl -s http://127.0.0.1:8000/ > /dev/null; then
+    echo "✅ FastAPI готов."
+    break
+  fi
+  echo "…ожидание ($i сек)"
+  sleep 1
+done
 
 # 🖥️ Запускаем Streamlit UI
 echo "🖥️  Запускаем Streamlit UI (app_ui.py)..."

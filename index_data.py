@@ -1,3 +1,5 @@
+#index_data.py
+
 def convert_excel_to_faq_format(xlsx_path: str, mapping_path: str = None):
     import pandas as pd
     from pathlib import Path
@@ -261,15 +263,20 @@ def load_process_faq(config_specific_dir: str, section_name: str, text_splitter:
                 data = json.load(f)
 
             documents = []
+            seen_pairs = set()
             for item in data:
                 q = item.get("question", "").strip()
                 a = item.get("answer", "").strip()
                 if q and a:
+                    key = (q, a)
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
                     content = f"Вопрос: {q}\n\nОтвет: {a}"
                     documents.append(Document(
                         page_content=content,
                         metadata={
-                            "source_type": item.get("source_type", "faq"), # Читаем source_type из элемента, по умолчанию 'faq'
+                            "source_type": item.get("source_type", "faq"),
                             "file_name": os.path.basename(faq_file_path),
                             "full_path": faq_file_path,
                             "1c_section": section_name,
@@ -280,6 +287,11 @@ def load_process_faq(config_specific_dir: str, section_name: str, text_splitter:
                     ))
             # Используем стандартный, надежный метод для разделения документов на чанки
             chunks = text_splitter.split_documents(documents)
+            for i, chunk in enumerate(chunks):
+                if "тильда" in chunk.page_content.lower():
+                    print(f"[DEBUG][faq][chunk {i}] ---")
+                    print(chunk.page_content[:500])
+                    print("...---")
             all_chunks.extend(chunks)
             print(f"      Загружено {len(documents)} FAQ, разделено на {len(chunks)} чанков.")
         except Exception as e:
